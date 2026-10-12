@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.idea/
+.env
+.env.*
+!.env.example
+*.tsbuildinfo
+.DS_Store
+supabase/.temp/
+.wrangler/
+.dev.vars*

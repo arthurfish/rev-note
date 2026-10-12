@@ -1,0 +1,1071 @@
+# Note App — Final Design Decisions v1
+
+## 1. 产品定位
+
+这是一个：
+
+- 极简笔记应用
+- 核心原子是 `Note`
+- 无标题
+- 文本内容为主
+- Web + Android
+- Local-first
+- 支持多设备同步
+- 支持版本历史与冲突保留
+- 支持全文、语义、元数据检索
+- 支持 GitHub 灾备
+- 后续单独重点设计高级 UX
+
+---
+
+# 2. 技术栈
+
+## Web
+
+- React
+- TypeScript
+- shadcn/ui
+
+## Android
+
+- React Native
+- Expo
+- TypeScript
+- SQLite
+
+## Backend
+
+- Supabase
+- PostgreSQL
+- Supabase Auth
+- RLS
+- Supabase Realtime / Broadcast
+- Edge Functions
+- pgvector
+
+## Monorepo
+
+共享：
+
+- domain
+- schema
+- sync protocol
+- commands
+- search/query logic
+
+Web 与 Mobile 不强行共享 UI。
+
+---
+
+# 3. 明确放弃的方案
+
+当前版本不使用：
+
+- Electric
+- Yjs
+- CRDT
+- OT
+- Line / Block 级领域模型
+- 字符级实时协同
+- Google Docs 式多人实时编辑
+
+原因：
+
+当前业务没有足够强的需求来支付这些方案带来的复杂度。
+
+---
+
+# 4. 核心领域原则
+
+系统最核心原则：
+
+> Note 是 identity。
+> Revision 是 immutable data。
+> Edit = append revision。
+> Current state = pointer。
+> Conflict = branch。
+
+---
+
+# 5. Note
+
+`Note` 是 Aggregate Root。
+
+它表示一条逻辑笔记的身份与生命周期。
+
+概念模型：
+
+```ts
+Note {
+  id
+  ownerId
+
+  currentRevisionId
+
+  createdAt
+
+  status
+}
+```
+
+Note 不直接拥有正文。
+
+Note 主要负责：
+
+- identity
+- lifecycle
+- current revision pointer
+
+Note 不应该直接负责：
+
+- content
+- device
+- location
+- embedding
+- search index
+- sync cursor
+- GitHub backup state
+
+---
+
+# 6. Revision
+
+正文存在于 `Revision`。
+
+```ts
+Revision {
+  id
+  noteId
+
+  parentRevisionId?
+
+  content
+
+  captureContext
+
+  author
+}
+```
+
+Revision 是 immutable。
+
+Revision 创建以后禁止修改：
+
+- content
+- parentRevisionId
+- captureContext
+- author
+
+因此不存在：
+
+```ts
+updateRevision()
+```
+
+也不存在传统意义上的：
+
+```ts
+updateNoteContent()
+```
+
+正确领域行为是：
+
+```ts
+reviseNote()
+```
+
+即：
+
+```text
+Old Revision
+      ↓
+Create New Revision
+      ↓
+Note.currentRevisionId = New Revision
+```
+
+---
+
+# 7. Revision 冲突模型
+
+正常历史：
+
+```text
+R1
+ ↓
+R2
+ ↓
+R3
+```
+
+两个设备同时基于 R2 编辑：
+
+```text
+       R2
+      /  \
+     /    \
+   R3A    R3B
+```
+
+这个 branch 本身就是冲突。
+
+原则：
+
+- 两个 Revision 都保存
+- 不静默覆盖
+- 不丢失任意一个版本
+- 第一版不要求自动 merge
+- 后续可实现 3-way merge
+- 后续必要时再引入显式 `NoteConflict`
+
+Revision 的：
+
+```text
+parentRevisionId
+```
+
+是冲突检测最关键的信息。
+
+---
+
+# 8. CaptureContext
+
+Revision 创建时附带产生上下文。
+
+不用 `Spacetime` 作为总名称，统一称为：
+
+```text
+CaptureContext
+```
+
+结构：
+
+```ts
+CaptureContext {
+  time
+  place?
+  device?
+}
+```
+
+CaptureContext 是 immutable Value Object。
+
+---
+
+# 9. Time
+
+```ts
+Time {
+  datetime
+  timezone
+}
+```
+
+它表达：
+
+> 这个 Revision 是什么时候产生的。
+
+时间主要用于：
+
+- 用户语义
+- 搜索
+- 展示
+- 历史
+
+同步正确性不依赖客户端时间。
+
+同步顺序以后使用服务器自己的 `serverSeq`。
+
+---
+
+# 10. Place
+
+第一版保持简单：
+
+```ts
+Place {
+  city?
+}
+```
+
+例如：
+
+```text
+Tokyo
+Shanghai
+New York
+```
+
+暂时不强制加入：
+
+- longitude
+- latitude
+- street
+- POI
+- geohash
+- accuracy
+
+以后需要附近搜索时再扩展。
+
+Place 允许不存在。
+
+---
+
+# 11. DeviceContext
+
+```ts
+DeviceContext {
+  type?
+  os?
+}
+```
+
+建议枚举。
+
+DeviceType：
+
+```text
+desktop
+laptop
+phone
+tablet
+unknown
+```
+
+OS：
+
+```text
+windows
+macos
+linux
+android
+ios
+unknown
+```
+
+不要在领域层直接持久化任意 `"PC"` / `"pc"` / `"Computer"` 之类字符串。
+
+---
+
+# 12. Author
+
+Author 描述：
+
+> 谁生成了这个 Revision 的内容。
+
+```ts
+Author =
+  | Human
+  | LLM
+  | Program
+```
+
+建议模型：
+
+```ts
+Author {
+  type: "human" | "llm" | "program"
+  name?
+}
+```
+
+例如：
+
+```text
+human
+```
+
+或者：
+
+```text
+llm / 某模型
+```
+
+或者：
+
+```text
+program / github-import
+```
+
+设备不属于 Author。
+
+设备属于 CaptureContext。
+
+---
+
+# 13. NoteUserPreference
+
+Preference 与正文内容分离。
+
+例如：
+
+```ts
+NoteUserPreference {
+  userId
+  noteId
+
+  color?
+  pinned?
+}
+```
+
+Preference 的变化：
+
+- 不产生 Revision
+- 不属于 Note 内容历史
+
+颜色不保存 Tailwind class。
+
+不要保存：
+
+```text
+bg-blue-500
+```
+
+领域层应该保存 semantic color：
+
+```text
+neutral
+red
+orange
+yellow
+green
+blue
+purple
+```
+
+Tailwind / CSS / React Native 如何映射由 UI 层决定。
+
+---
+
+# 14. NoteDerived
+
+Derived Data 不属于核心事实。
+
+它表示：
+
+> 系统从当前 Revision 计算出来的数据。
+
+```ts
+NoteDerived {
+  noteId
+  revisionId
+
+  searchDocument?
+  embedding?
+
+  language?
+  characterCount?
+
+  derivedAt?
+}
+```
+
+最关键字段：
+
+```text
+revisionId
+```
+
+例如：
+
+```text
+Note.currentRevisionId = R8
+NoteDerived.revisionId = R7
+```
+
+即可知道 derived data 已 stale。
+
+Derived Data 特性：
+
+- 可以删除
+- 可以重新生成
+- 不参与核心同步正确性
+
+---
+
+# 15. Full-text 与 Vector
+
+领域模型里不要叫：
+
+```text
+fulltextIndex
+vectorIndex
+```
+
+应该叫：
+
+```text
+searchDocument
+embedding
+```
+
+因为真正的数据库 index 是 infrastructure concern。
+
+例如：
+
+```text
+searchDocument
+↓
+Postgres tsvector
+↓
+GIN
+```
+
+以及：
+
+```text
+embedding
+↓
+pgvector
+↓
+HNSW
+```
+
+---
+
+# 16. Effect Schema
+
+所有核心领域数据结构：
+
+> 使用 Effect Schema 作为唯一真相来源。
+
+例如：
+
+```ts
+export const Note = Schema.Struct({...})
+
+export type Note = typeof Note.Type
+```
+
+不再同时维护：
+
+```text
+interface
+validator
+DTO type
+```
+
+三套重复定义。
+
+规则：
+
+```text
+Schema first
+↓
+derive TypeScript type
+```
+
+---
+
+# 17. Schema 的职责边界
+
+Effect Schema 负责：
+
+> Value validity
+
+例如：
+
+- NoteId 是合法格式
+- Author.type 是合法枚举
+- Revision.content 是 string
+
+但 Schema 不负责跨对象业务规则。
+
+例如：
+
+```text
+Note.currentRevisionId 必须属于这个 Note
+```
+
+以及：
+
+```text
+Revision.parentRevisionId 必须属于同一个 Note
+```
+
+属于 Domain Logic。
+
+因此：
+
+```text
+Schema
+→ 数据是否合法
+
+Domain Command
+→ 操作是否合法
+```
+
+---
+
+# 18. Domain Schema ≠ API Schema ≠ DB Schema
+
+不要尝试使用一个巨大 Schema 控制所有层。
+
+三种不同概念允许有不同 Schema：
+
+```text
+Domain Schema
+API Schema
+Persistence Schema
+```
+
+它们可以共享：
+
+- NoteId
+- RevisionId
+- Author
+- CaptureContext
+- 枚举
+
+但不同 representation 可以不同。
+
+例如 Domain：
+
+```ts
+captureContext: {
+  time: {...},
+  place: {...},
+  device: {...}
+}
+```
+
+数据库完全可以 flatten 为：
+
+```text
+captured_at
+timezone
+city
+device_type
+os
+```
+
+---
+
+# 19. Spacetime / CaptureContext 不要求单独数据库表
+
+在 Domain 中：
+
+```text
+CaptureContext
+```
+
+是 Value Object。
+
+但这不意味着 PostgreSQL 必须有：
+
+```text
+capture_contexts
+```
+
+或者：
+
+```text
+spacetime
+```
+
+表。
+
+第一版可以直接 flatten 到 `note_revisions`。
+
+领域建模和数据库范式化是两个不同问题。
+
+---
+
+# 20. 核心 Domain Commands
+
+应用不直接暴露随意 CRUD。
+
+核心行为：
+
+```ts
+createNote()
+reviseNote()
+
+deleteNote()
+restoreNote()
+
+setNotePreference()
+
+selectRevision()
+```
+
+未来：
+
+```ts
+resolveConflict()
+```
+
+原则：
+
+> API 应围绕业务行为设计，而不是围绕 SQL CRUD 设计。
+
+---
+
+# 21. 删除
+
+删除属于 Note 生命周期。
+
+Revision 不删除。
+
+第一版：
+
+```text
+Note.status
+```
+
+或者数据库层：
+
+```text
+deletedAt
+```
+
+作为 tombstone。
+
+因此：
+
+```text
+delete Note
+```
+
+不会删除历史 Revision。
+
+支持：
+
+```text
+restoreNote()
+```
+
+---
+
+# 22. Local-first
+
+Web：
+
+```text
+IndexedDB
+```
+
+Android：
+
+```text
+SQLite
+```
+
+用户编辑：
+
+```text
+create local Revision
+↓
+persist locally
+↓
+UI immediately succeeds
+↓
+background sync
+```
+
+网络不处于用户输入的关键路径。
+
+---
+
+# 23. 同步模型
+
+同步不使用 Yjs。
+
+采用：
+
+```text
+immutable revision
++
+durable outbox
++
+idempotent push
++
+server sequence pull
++
+optimistic concurrency
+```
+
+核心机制：
+
+```text
+Local Revision
+      ↓
+Outbox
+      ↓
+Push
+      ↓
+Postgres
+```
+
+服务端分配：
+
+```text
+serverSeq
+```
+
+客户端保存：
+
+```text
+lastPulledSeq
+```
+
+Pull：
+
+```text
+GET /sync/pull?after=<serverSeq>
+```
+
+---
+
+# 24. Push 幂等
+
+客户端操作拥有：
+
+```text
+clientOpId
+```
+
+服务器必须能够安全处理重复提交。
+
+数据库保证：
+
+```text
+UNIQUE(user_id, client_op_id)
+```
+
+或者等价约束。
+
+原则：
+
+> 所有 push 都必须可以安全 retry。
+
+---
+
+# 25. Realtime
+
+Supabase Broadcast 不是真正的同步机制。
+
+它只负责：
+
+```text
+“服务器有新数据了”
+```
+
+客户端收到后：
+
+```text
+trigger pull
+```
+
+所以：
+
+```text
+Postgres / sync log
+= durable truth
+
+Broadcast
+= wake-up / acceleration
+```
+
+即使错过 Broadcast，客户端重新上线后仍能依靠 `serverSeq` catch up。
+
+---
+
+# 26. 并发写入
+
+客户端创建新 Revision 时携带：
+
+```text
+parentRevisionId
+```
+
+服务器比较：
+
+```text
+parentRevisionId
+vs
+Note.currentRevisionId
+```
+
+一致：
+
+```text
+正常推进 currentRevision
+```
+
+不一致：
+
+```text
+形成 branch
+保留 Revision
+标记/识别 conflict
+```
+
+不静默丢弃 Revision。
+
+---
+
+# 27. 搜索
+
+普通搜索只面向：
+
+```text
+Note.currentRevision
+```
+
+支持：
+
+- metadata search
+- PostgreSQL full-text search
+- semantic search
+- hybrid search
+- 后续 JS / DSL query
+
+历史 Revision 默认不参与普通搜索。
+
+---
+
+# 28. GitHub 灾备
+
+GitHub 不是同步数据库。
+
+GitHub 是：
+
+```text
+human-readable backup
++
+disaster recovery
++
+data ownership
+```
+
+使用：
+
+```text
+GitHub App
+```
+
+而不是让用户把 PAT 放客户端。
+
+GitHub token 永远不进入 Web / Android 客户端。
+
+通过 Server / Supabase Edge Function 操作 GitHub。
+
+备份格式优先：
+
+```text
+Markdown
+JSON metadata
+```
+
+确保即使应用和数据库都消失，用户仍能直接读取自己的数据。
+
+---
+
+# 29. GitHub 与 Revision
+
+可以只备份：
+
+```text
+current Revision
+```
+
+也可以以后支持完整 Revision history。
+
+因为 Revision immutable，增量备份非常自然：
+
+```text
+已经备份过的 Revision
+永远无需重新写
+```
+
+---
+
+# 30. Infrastructure 数据不属于 Domain
+
+以下都明确不属于核心领域模型：
+
+```text
+serverSeq
+clientOpId
+lastPulledSeq
+
+syncStatus
+retryCount
+
+githubCommitSha
+lastBackupAt
+
+embeddingJobId
+embeddingJobStatus
+
+Supabase realtime channel
+```
+
+这些属于：
+
+```text
+Application / Infrastructure
+```
+
+---
+
+# 31. 最终架构边界
+
+```text
+┌──────────────────────────────┐
+│            DOMAIN            │
+│                              │
+│ Note                         │
+│ Revision                     │
+│ CaptureContext               │
+│ Time / Place / Device        │
+│ Author                       │
+│ NoteUserPreference           │
+└──────────────┬───────────────┘
+               │
+               ▼
+┌──────────────────────────────┐
+│      DERIVED / READ MODEL    │
+│                              │
+│ NoteDerived                  │
+│ Full-text                    │
+│ Embedding                    │
+│ Search                       │
+└──────────────┬───────────────┘
+               │
+               ▼
+┌──────────────────────────────┐
+│        APPLICATION           │
+│                              │
+│ Commands                     │
+│ Sync                         │
+│ Conflict handling            │
+└──────────────┬───────────────┘
+               │
+               ▼
+┌──────────────────────────────┐
+│       INFRASTRUCTURE         │
+│                              │
+│ PostgreSQL / Supabase        │
+│ IndexedDB / SQLite           │
+│ Realtime                     │
+│ pgvector                     │
+│ GitHub backup                │
+└──────────────────────────────┘
+```
+
+# 32. 一句话版本
+
+整个系统最终遵循：
+
+> **Note 管身份和生命周期；Revision 管不可变内容与版本关系；CaptureContext 管内容产生时的时间、地点和设备；Author 管内容来源；Preference 管用户展示偏好；Derived 管机器对内容的理解。**
+
+同步遵循：
+
+> **Local-first + Immutable Revision + Outbox + Idempotent Push + Server Sequence Pull + Conflict as Branch。**
+
+数据建模遵循：
+
+> **Effect Schema 是领域数据结构的唯一真相来源，TypeScript 类型由 Schema 推导；Domain、API、Persistence 各自保留明确的边界表示。**
