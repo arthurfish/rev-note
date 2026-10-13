@@ -8,7 +8,8 @@
     "build": "tsc -b && vite build",
     "deploy": "wrangler deploy",
     "preview": "vite preview --host 0.0.0.0",
-    "typecheck": "tsc -b"
+    "typecheck": "tsc -b",
+    "test": "deno test supabase/functions/github-account/logic_test.ts supabase/functions/github-backup/branch_test.ts"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.1.15",
