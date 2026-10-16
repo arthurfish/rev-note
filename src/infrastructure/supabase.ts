@@ -1,4 +1,4 @@
-import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import { createClient, FunctionsHttpError, type SupabaseClient } from "@supabase/supabase-js";
 import {
   acknowledgeOperations, applyRemoteEvents, loadSnapshot,
   type RemoteSyncEvent,
@@ -46,15 +46,13 @@ export async function signOutCloud(): Promise<void> {
 
 export async function backupToGithub(): Promise<{ repository: string; branch: string; commitSha: string; noteCount: number }> {
   const { data, error } = await getClient().functions.invoke("github-backup", { body: {} });
-  if (error) throw error;
+  if (error) await throwFunctionError(error);
   if (!data?.ok) throw new Error(data?.error ?? "GitHub 备份失败");
   return data;
 }
 
 export interface GithubConnection {
-  installationAccountLogin: string;
-  repositoryId: string | null;
-  repositoryFullName: string | null;
+  repositoryFullName: string;
 }
 
 export interface GithubStatus {
@@ -62,27 +60,12 @@ export interface GithubStatus {
   connection: GithubConnection | null;
 }
 
-export interface GithubRepository {
-  id: string;
-  fullName: string;
-  private: boolean;
-  defaultBranch: string | null;
-}
-
 export async function getGithubStatus(): Promise<GithubStatus> {
   return githubAccount<GithubStatus>({ action: "status" });
 }
 
-export async function startGithubConnection(): Promise<{ installUrl: string }> {
-  return githubAccount<{ installUrl: string }>({ action: "start" });
-}
-
-export async function listGithubRepositories(): Promise<{ repositories: GithubRepository[]; selectedRepositoryId: string | null }> {
-  return githubAccount<{ repositories: GithubRepository[]; selectedRepositoryId: string | null }>({ action: "repositories" });
-}
-
-export async function selectGithubRepository(repositoryId: string): Promise<{ connection: GithubConnection }> {
-  return githubAccount<{ connection: GithubConnection }>({ action: "select-repository", repositoryId });
+export async function connectGithub(token: string, repositoryFullName: string): Promise<{ connection: GithubConnection }> {
+  return githubAccount<{ connection: GithubConnection }>({ action: "connect", token, repositoryFullName });
 }
 
 export async function disconnectGithub(): Promise<void> {
@@ -91,9 +74,17 @@ export async function disconnectGithub(): Promise<void> {
 
 async function githubAccount<T>(body: Record<string, unknown>): Promise<T> {
   const { data, error } = await getClient().functions.invoke<T & { error?: string }>("github-account", { body });
-  if (error) throw error;
+  if (error) await throwFunctionError(error);
   if (data?.error) throw new Error(data.error);
   return data as T;
+}
+
+async function throwFunctionError(error: Error): Promise<never> {
+  if (error instanceof FunctionsHttpError) {
+    const body = await error.context.clone().json().catch(() => null);
+    if (typeof body?.error === "string") throw new Error(body.error);
+  }
+  throw error;
 }
 
 export async function subscribeToRemoteEvents(listener: () => void): Promise<() => void> {

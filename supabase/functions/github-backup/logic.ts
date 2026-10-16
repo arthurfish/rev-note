@@ -1,5 +1,6 @@
-import { createInstallationToken, GithubApiError, githubRequest, listInstallationRepositories } from "../_shared/github.ts";
-import type { createAdminClient } from "../_shared/supabase.ts";
+import { getGithubRepository, GithubApiError, githubRequest, parseGithubRepositoryName } from "../_shared/github.ts";
+import { decryptGithubToken } from "../_shared/github-token.ts";
+import { requiredEnv, type createAdminClient } from "../_shared/supabase.ts";
 import { isMissingGithubRefError, resolveBackupBranch } from "./branch.ts";
 
 type SupabaseClient = ReturnType<typeof createAdminClient>;
@@ -24,21 +25,25 @@ export async function runGithubBackup(
   admin: SupabaseClient,
 ): Promise<GithubBackupResult> {
   const { data: connection, error: connectionError } = await admin.from("github_connections")
-    .select("installation_id, installation_account_login, repository_id, repository_full_name")
+    .select("token_ciphertext, repository_full_name")
     .eq("user_id", userId)
     .maybeSingle();
   if (connectionError) throw connectionError;
-  if (!connection?.repository_id) throw new GithubBackupError("请先连接 GitHub 并选择备份仓库", 409);
+  if (!connection?.token_ciphertext || !connection.repository_full_name) {
+    throw new GithubBackupError("请先连接 GitHub PAT 并设置备份仓库", 409);
+  }
 
-  const token = await createInstallationToken(connection.installation_id as string);
-  const repositories = await listInstallationRepositories(token);
-  const repository = repositories.find((item) => String(item.id) === String(connection.repository_id));
-  if (!repository) throw new GithubBackupError("目标仓库已不在 GitHub App 的授权范围内，请重新选择", 409);
+  const token = await decryptGithubToken(
+    connection.token_ciphertext,
+    requiredEnv("GITHUB_TOKEN_ENCRYPTION_KEY"),
+    userId,
+    connection.repository_full_name,
+  );
+  const parsedRepository = parseGithubRepositoryName(connection.repository_full_name);
+  if (!parsedRepository) throw new Error("Stored GitHub repository name is invalid");
+  const repository = await getGithubRepository(token, connection.repository_full_name);
   const [owner, repositoryName] = repository.full_name.split("/");
   if (!owner || !repositoryName) throw new Error("GitHub returned an invalid repository name");
-  if (owner.toLowerCase() !== String(connection.installation_account_login).toLowerCase()) {
-    throw new GithubBackupError("目标仓库不属于当前连接的 GitHub 个人账号", 403);
-  }
   let branch = repository.default_branch || "main";
 
   const [notes, preferences] = await Promise.all([

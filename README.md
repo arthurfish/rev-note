@@ -20,32 +20,32 @@ npm run dev
 - 版本历史、分支提示、固定、语义颜色、回收站、当前版本全文/元数据搜索。
 - JSON 导出与恢复；恢复前会提示替换当前浏览器的数据。
 - 可选 Supabase Auth 邮箱链接、幂等 push、按 `server_seq` pull、Realtime 唤醒和 RLS 数据库迁移。
-- 每位用户可单独安装 GitHub App、选择自己授权的仓库；Supabase Edge Function 使用短期 installation token 将当前版本备份为 Markdown 和 JSON 元数据，客户端不会接触 GitHub token。
+- 每位用户可连接一个仅授权单仓库的 fine-grained personal access token；Supabase Edge Function 在服务端解密并将当前版本备份为 Markdown 和 JSON 元数据，客户端不会再次读取已保存的 token。
 
 ## Supabase 同步配置
 
 1. 创建 Supabase 项目，运行 `npx supabase login`、`npx supabase link --project-ref <project-ref>` 和 `npx supabase db push` 应用数据库迁移。`<project-ref>` 可从 Supabase Dashboard 项目 URL 中找到。
 2. 在 Auth > URL Configuration 中设置 Site URL 和 Redirect URLs，加入本地 `http://localhost:5173` 与生产站点 URL。Supabase Email Magic Link 默认启用，确认 Email provider 可用。
 3. 复制 `.env.example` 为 `.env.local`，填入 Project URL 和 Publishable key（`sb_publishable_...`）。旧的 anon key 变量名仍作为兼容回退支持，但新项目推荐使用 publishable key。
-4. 在 GitHub > Settings > Developer settings > GitHub Apps 创建 GitHub App：
-   - Repository permissions 设置 **Contents: Read and write**；不需要申请其他仓库权限。
-   - 将 App 设置为可安装到 **Any account**，这样其他 GitHub 用户才能安装。
-   - Callback URL 设置为 `https://<project-ref>.supabase.co/functions/v1/github-oauth-callback`。
-   - Setup URL 设置为 `https://<project-ref>.supabase.co/functions/v1/github-install-callback`。无需启用 “Redirect on update”。
-   - 不要勾选 “Request user authorization (OAuth) during installation”；应用会在安装后的安全校验步骤单独请求 GitHub 授权。用户授权令牌只用于校验安装归属，校验后立即撤销，不会存入数据库。
-   - 记下 App ID、App slug 和 Client ID，生成一把 private key，并创建 Client secret。
-5. 在 Supabase Edge Function Secrets 中设置 `GITHUB_APP_ID`、`GITHUB_APP_SLUG`、`GITHUB_APP_PRIVATE_KEY`、`GITHUB_APP_CLIENT_ID`、`GITHUB_APP_CLIENT_SECRET` 和 `APP_BASE_URL`。`APP_BASE_URL` 是应用的根地址，例如本地 `http://localhost:5173` 或生产站点 URL。Private key 只保存在 Supabase Secrets；不要放进 `.env.local` 或前端代码。
-6. 部署迁移和四个 Edge Functions：
-   ```bash
-   npx supabase db push --project-ref <project-ref>
-   npx supabase functions deploy github-account --project-ref <project-ref>
-   npx supabase functions deploy github-install-callback --project-ref <project-ref>
-   npx supabase functions deploy github-oauth-callback --project-ref <project-ref>
-   npx supabase functions deploy github-backup --project-ref <project-ref>
-   ```
-7. 用户打开“设置与数据”，使用邮箱链接登录，点击“连接我的 GitHub”，在 GitHub 页面把 App 安装到自己的个人账号，并只授权该账号拥有的目标仓库。建议选择私有仓库以保护笔记内容。GitHub 会要求确认账号授权；回到应用后选择备份仓库。之后先完成 Supabase 同步，再点击“GitHub 备份”。
+4. 为备份仓库创建 fine-grained personal access token：
+   - 打开 [Fine-grained tokens](https://github.com/settings/personal-access-tokens/new?name=RevNote%20backup&description=Backup%20notes%20from%20RevNote&contents=write)。
+   - Resource owner 选择仓库所属的个人账号；Repository access 只选择一个目标仓库。
+   - Repository permissions 仅需 **Contents: Read and write**；Metadata read 是 GitHub 自动包含的只读权限。
+   - 建议设置 token 过期时间，并在 token 创建后立即复制。RevNote 不会收到或保存 GitHub 登录密码。
+5. 生成一次服务端加密密钥，例如运行 `openssl rand -base64 32`。将输出设置为 Supabase Edge Function Secret `GITHUB_TOKEN_ENCRYPTION_KEY`；本地运行 Edge Functions 时，将同一值和本地 Supabase URL/server key 放入未提交的 `.env.edge`，并使用 `npx supabase functions serve --env-file .env.edge` 启动。该密钥只用于加密数据库中的 PAT，不要放进 `.env.local` 或前端代码；丢失或更换密钥后，用户需要重新连接 PAT。
+6. 部署迁移和两个 Edge Functions：
+    ```bash
+    npx supabase db push --project-ref <project-ref>
+    npx supabase functions deploy github-account --project-ref <project-ref>
+    npx supabase functions deploy github-backup --project-ref <project-ref>
+    ```
+7. 用户打开“设置与数据”，使用邮箱链接登录，在 GitHub 连接区域填写仓库名（`owner/repository`）和刚创建的 PAT。应用会在服务端验证 PAT 能读取该仓库，并以 AES-GCM 加密后保存。之后先完成 Supabase 同步，再点击“GitHub 备份”。
 
-匿名键只用于浏览器端 Auth；不要把 Supabase service role key 或 GitHub App private key 放入客户端。GitHub 安装回调使用一次性随机 state 绑定 Supabase 用户；OAuth 回调会验证该 GitHub 用户确实能访问对应的 App installation，避免仅信任可伪造的 `installation_id`。连接信息和授权 state 仅由 Edge Functions 读写。
+匿名键只用于浏览器端 Auth；不要把 Supabase service role key、`GITHUB_TOKEN_ENCRYPTION_KEY` 或 PAT 放入客户端。PAT 密文和备份连接信息只由 Edge Functions 读写。断开 RevNote 连接会删除服务器保存的密文，但不会撤销 GitHub 上的 token；如需撤销权限，请在 GitHub 的 fine-grained token 设置中删除该 token。
+
+可用 `npx supabase test db` 运行连接凭证表的权限测试。
+
+切换后，旧版 GitHub App 连接和备份状态会被迁移清除，用户需重新填写 PAT；迁移不会卸载用户此前安装的 GitHub App，如不再需要，可在 GitHub 的 Installed GitHub Apps 设置中手动卸载。
 
 ## 架构
 
@@ -54,7 +54,7 @@ src/domain/             Effect Schema 与业务命令
 src/infrastructure/     IndexedDB、Supabase 同步适配器
 src/App.tsx             Web UI
 supabase/migrations/    Postgres 表、RLS、push/pull/search RPC
-supabase/functions/     用户级 GitHub App 授权、仓库选择与备份
+supabase/functions/     用户级 GitHub PAT 加密连接与备份
 ```
 
 Supabase 迁移预留了 `pgvector` embedding 字段和当前版本全文检索 RPC；本版尚未配置 embedding 生成任务或语义检索界面。GitHub 备份只写当前版本；每位用户的文件保存在所选仓库的 `users/<supabase-user-id>/` 目录中，JSON 导出可作为手动本地备份。GitHub 是单向备份目的地，多设备同步仍由 Supabase 完成。Android、自动合并、多人实时协作均不在本版实现范围内。

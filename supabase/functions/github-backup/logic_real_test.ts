@@ -2,7 +2,7 @@
  * Local live run:
  * deno run --allow-env --allow-net --env-file=.env.edge supabase/functions/github-backup/logic_real_test.ts <user-id>
  *
- * The env file must provide SUPABASE_URL, a Supabase server secret key, and the GitHub App ID/private key.
+ * The env file must provide SUPABASE_URL, a Supabase server secret key, and GITHUB_TOKEN_ENCRYPTION_KEY.
  * This invokes the real backup workflow and writes to the selected GitHub repository.
  */
 import { createAdminClient } from "../_shared/supabase.ts";

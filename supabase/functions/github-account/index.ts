@@ -5,6 +5,7 @@ import {
   type GithubAccountActionInput,
 } from "./logic.ts";
 import { createAdminClient, FunctionError, jsonResponse, requireAuthenticatedUser } from "../_shared/supabase.ts";
+import { GithubApiError } from "../_shared/github.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -24,7 +25,11 @@ Deno.serve(async (request) => {
     return jsonResponse(result, 200, corsHeaders);
   } catch (error) {
     console.error("github-account failed", error);
-    const status = error instanceof GithubAccountError || error instanceof FunctionError ? error.status : 500;
+    const status = error instanceof GithubAccountError || error instanceof FunctionError
+      ? error.status
+      : error instanceof GithubApiError && [401, 403, 404].includes(error.status)
+      ? error.status
+      : 500;
     const message = error instanceof Error ? error.message : "GitHub account operation failed";
     return jsonResponse({ error: message }, status, corsHeaders);
   }

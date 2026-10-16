@@ -201,12 +201,17 @@ kbd { font-family: inherit; font-size: 10px; white-space: nowrap; border: 1px so
 .github-help { margin: 9px 0 0; color: #a19da5; font-size: 9px; line-height: 1.5; }
 .github-connect-row { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; margin-top: 9px; }
 .github-connect-row > span { color: #aaa6ae; font-size: 8px; }
+.github-credential-form { display: grid; gap: 6px; margin-top: 10px; }
+.github-credential-form label { color: #77737c; font-size: 8.5px; }
+.github-credential-form input { width: 100%; height: 30px; padding: 0 8px; border: 1px solid #e9e6e0; border-radius: 6px; outline: 0; color: #68646d; background: #fffefa; font-size: 9px; }
+.github-credential-form input:focus { border-color: #b7a9d9; }
+.github-credential-form input::placeholder { color: #c0bdc3; }
+.github-credential-form .github-help { margin: 0; }
+.github-help strong { color: #77737c; font-weight: 600; }
+.github-help a { margin-left: 4px; color: #7662ae; text-decoration: underline; }
 .github-management-row { display: flex; flex-wrap: wrap; gap: 3px 10px; margin: 5px 0 0 12px; }
 .github-link-button { padding: 2px 0; border: 0; color: #7662ae; background: transparent; font-size: 8.5px; cursor: pointer; }
 .github-link-button:hover { text-decoration: underline; }.github-link-button:disabled { opacity: .55; cursor: default; }.github-link-button.muted { color: #aaa6ae; }
-.github-repository-picker { margin: 8px 0 0 12px; }
-.github-repository-picker select { width: 100%; height: 31px; padding: 0 8px; border: 1px solid #e9e6e0; border-radius: 6px; outline: 0; color: #68646d; background: #fffefa; font-size: 9px; }
-.github-repository-picker span { color: #aaa6ae; font-size: 8.5px; }
 .sync-now-button, .sign-out-button { height: 30px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 0 10px; border: 1px solid #e7e3dc; border-radius: 7px; color: #7563a5; background: #f2eff8; font-size: 9px; font-weight: 600; cursor: pointer; }
 .sync-now-button:disabled { opacity: .6; cursor: default; }.sign-out-button { color: #96929b; background: transparent; }.sign-out-button:hover { background: #f7f5f1; }
 .backup-github-button { height: 30px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 0 9px; border: 1px solid #dfe5d9; border-radius: 7px; color: #6f8965; background: #f1f5ed; font-size: 9px; font-weight: 600; cursor: pointer; }.backup-github-button:disabled { opacity: .55; cursor: default; }

@@ -8,7 +8,7 @@ import {
 } from "lucide-react";
 import {createNote, deleteNote, reviseNote, restoreNote, selectRevision, setNotePreference} from "./domain/commands";
 import type {NoteColor, Revision as RevisionValue} from "./domain/schema";
-import type {GithubRepository, GithubStatus} from "./infrastructure/supabase";
+import type {GithubStatus} from "./infrastructure/supabase";
 import {
     exportLocalBackup, getLocalOwnerId, importLocalBackup,
     loadSnapshot, persistNewNote, persistNoteAndOperation, persistPreference, persistRevision,
@@ -61,10 +61,11 @@ export default function App() {
     const [syncing, setSyncing] = useState(false);
     const [backingUp, setBackingUp] = useState(false);
     const [githubStatus, setGithubStatus] = useState<GithubStatus | null>(null);
-    const [githubRepositories, setGithubRepositories] = useState<GithubRepository[]>([]);
     const [githubBusy, setGithubBusy] = useState(false);
     const [githubStatusLoading, setGithubStatusLoading] = useState(false);
-    const [githubPickerOpen, setGithubPickerOpen] = useState(false);
+    const [githubTokenInput, setGithubTokenInput] = useState("");
+    const [githubRepositoryInput, setGithubRepositoryInput] = useState("");
+    const [githubFormOpen, setGithubFormOpen] = useState(false);
     const [isDraftSaving, setIsDraftSaving] = useState(false);
     const fileInput = useRef<HTMLInputElement>(null);
     const searchInput = useRef<HTMLInputElement>(null);
@@ -72,22 +73,6 @@ export default function App() {
     const saveVersion = useRef(0);
 
     const reload = useCallback(async () => setSnapshot(await loadSnapshot()), []);
-
-    const refreshGithubRepositories = useCallback(async (openPicker = true) => {
-        setGithubBusy(true);
-        try {
-            const {listGithubRepositories} = await import("./infrastructure/supabase");
-            const result = await listGithubRepositories();
-            setGithubRepositories(result.repositories);
-            if (openPicker) setGithubPickerOpen(true);
-            return result.repositories;
-        } catch (error) {
-            setNotice(error instanceof Error ? error.message : "无法读取 GitHub 仓库");
-            return null;
-        } finally {
-            setGithubBusy(false);
-        }
-    }, []);
 
     useEffect(() => {
         let alive = true;
@@ -127,34 +112,20 @@ export default function App() {
     }, []);
 
     useEffect(() => {
-        const url = new URL(window.location.href);
-        const githubResult = url.searchParams.get("github");
-        if (!githubResult) return;
-        setNotice(githubResult === "connected" ? "GitHub 已连接，请选择备份仓库" : "GitHub 授权未完成，请重试并确认安装和授权的是同一个 GitHub 账号");
-        url.searchParams.delete("github");
-        window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
-    }, []);
-
-    useEffect(() => {
         if (!cloudEmail) {
             setGithubStatus(null);
-            setGithubRepositories([]);
-            setGithubPickerOpen(false);
             setGithubStatusLoading(false);
+            setGithubTokenInput("");
+            setGithubRepositoryInput("");
+            setGithubFormOpen(false);
             return;
         }
         let alive = true;
         setGithubStatus(null);
-        setGithubRepositories([]);
-        setGithubPickerOpen(false);
         setGithubStatusLoading(true);
         void import("./infrastructure/supabase").then(({getGithubStatus}) => getGithubStatus()).then((status) => {
             if (!alive) return;
             setGithubStatus(status);
-            if (status.connection && !status.connection.repositoryId) {
-                setGithubPickerOpen(true);
-                void refreshGithubRepositories(false);
-            }
         }).catch((error: unknown) => {
             if (alive) setNotice(error instanceof Error ? error.message : "无法读取 GitHub 连接状态");
         }).finally(() => {
@@ -163,7 +134,7 @@ export default function App() {
         return () => {
             alive = false;
         };
-    }, [cloudEmail, refreshGithubRepositories]);
+    }, [cloudEmail]);
 
     const selectedNote = snapshot?.notes.find((note) => note.id === selectedId) ?? null;
     const selectedRevision = snapshot?.revisions.find((revision) => revision.id === selectedNote?.currentRevisionId) ?? null;
@@ -409,7 +380,7 @@ export default function App() {
         if (!cloudEmail || backingUp) return;
         setBackingUp(true);
         try {
-            if (!githubStatus?.connection?.repositoryId) throw new Error("请先连接 GitHub 并选择备份仓库");
+            if (!githubStatus?.connection?.repositoryFullName) throw new Error("请先连接 GitHub PAT 并设置备份仓库");
             await runSync(false);
             const fresh = await loadSnapshot();
             if (fresh.outbox.length) throw new Error("还有笔记等待云端同步，请联网并稍后重试 GitHub 备份");
@@ -426,28 +397,15 @@ export default function App() {
     async function connectGithub() {
         setGithubBusy(true);
         try {
-            const {startGithubConnection} = await import("./infrastructure/supabase");
-            const {installUrl} = await startGithubConnection();
-            window.location.assign(installUrl);
-        } catch (error) {
-            setNotice(error instanceof Error ? error.message : "无法开始 GitHub 授权");
-        } finally {
-            setGithubBusy(false);
-        }
-    }
-
-    async function chooseGithubRepository(repositoryId: string) {
-        if (!repositoryId) return;
-        setGithubBusy(true);
-        try {
-            const {selectGithubRepository} = await import("./infrastructure/supabase");
-            const {connection} = await selectGithubRepository(repositoryId);
+            const {connectGithub: connect} = await import("./infrastructure/supabase");
+            const {connection} = await connect(githubTokenInput, githubRepositoryInput);
             setGithubStatus((previous) => previous ? {...previous, connection} : previous);
-            setGithubPickerOpen(false);
-            const repositoryName = githubRepositories.find((repository) => repository.id === repositoryId)?.fullName;
-            setNotice(`GitHub 备份仓库已设为 ${repositoryName ?? connection.repositoryFullName}`);
+            setGithubTokenInput("");
+            setGithubRepositoryInput(connection.repositoryFullName);
+            setGithubFormOpen(false);
+            setNotice(`GitHub PAT 已连接，备份仓库为 ${connection.repositoryFullName}`);
         } catch (error) {
-            setNotice(error instanceof Error ? error.message : "无法选择 GitHub 仓库");
+            setNotice(error instanceof Error ? error.message : "无法连接 GitHub PAT");
         } finally {
             setGithubBusy(false);
         }
@@ -459,8 +417,9 @@ export default function App() {
             const {disconnectGithub: disconnect} = await import("./infrastructure/supabase");
             await disconnect();
             setGithubStatus((previous) => previous ? {...previous, connection: null} : previous);
-            setGithubRepositories([]);
-            setGithubPickerOpen(false);
+            setGithubTokenInput("");
+            setGithubRepositoryInput("");
+            setGithubFormOpen(false);
             setNotice("已断开 revnote 与 GitHub 的连接");
         } catch (error) {
             setNotice(error instanceof Error ? error.message : "无法断开 GitHub 连接");
@@ -733,35 +692,44 @@ export default function App() {
                         <div className="github-panel">
                             <div className="github-panel-heading">
                                 <div className="github-panel-icon"><Github size={15}/></div>
-                                <div><strong>备份到个人 GitHub 仓库</strong><p>每位用户独立授权并选择自己的仓库，建议使用私有仓库。</p></div>
+                                <div><strong>备份到个人 GitHub 仓库</strong><p>使用只授权一个仓库的 fine-grained PAT，建议选择私有仓库。</p></div>
                             </div>
                             {githubStatusLoading ? <div className="github-status-line"><LoaderCircle className="spin" size={13}/>正在读取 GitHub 连接…</div> :
-                                !githubStatus?.configured ? <p className="github-help">GitHub App 尚未配置，请联系应用管理员。</p> :
-                                    !githubStatus.connection ? <div className="github-connect-row">
-                                        <button className="backup-github-button" onClick={() => void connectGithub()} disabled={githubBusy}>
-                                            {githubBusy ? <LoaderCircle className="spin" size={13}/> : <Github size={13}/>}连接我的 GitHub
-                                        </button>
-                                        <span>安装 App 后再选择要备份的仓库</span>
-                                    </div> : <>
-                                        <div className="github-status-line"><span className="github-connected-dot"/>已连接 @{githubStatus.connection.installationAccountLogin}
-                                            <span className="github-repository-name">{githubStatus.connection.repositoryFullName ?? "尚未选择仓库"}</span>
+                                !githubStatus?.configured ? <p className="github-help">服务端尚未配置 GITHUB_TOKEN_ENCRYPTION_KEY，请联系应用管理员。</p> :
+                                    !githubStatus.connection || githubFormOpen ? <form className="github-credential-form" onSubmit={(event) => {
+                                        event.preventDefault();
+                                        void connectGithub();
+                                    }}>
+                                        <label htmlFor="github-repository">备份仓库</label>
+                                        <input id="github-repository" type="text" value={githubRepositoryInput} onChange={(event) => setGithubRepositoryInput(event.target.value)}
+                                               placeholder="owner/repository" autoCapitalize="off" autoCorrect="off" required/>
+                                        <label htmlFor="github-pat">Fine-grained personal access token</label>
+                                        <input id="github-pat" type="password" value={githubTokenInput} onChange={(event) => setGithubTokenInput(event.target.value)}
+                                               placeholder="github_pat_…" autoComplete="new-password" spellCheck={false} required minLength={20}/>
+                                        <p className="github-help">创建 token 时只选择上面的仓库，并授予 <strong>Contents: Read and write</strong>。<a
+                                            href="https://github.com/settings/personal-access-tokens/new?name=RevNote%20backup&description=Backup%20notes%20from%20RevNote&contents=write"
+                                            target="_blank" rel="noreferrer">创建 fine-grained token</a></p>
+                                        <div className="github-connect-row">
+                                            <button className="backup-github-button" type="submit" disabled={githubBusy}>
+                                                {githubBusy ? <LoaderCircle className="spin" size={13}/> : <Github size={13}/>}验证并保存
+                                            </button>
+                                            {githubStatus.connection && <button className="github-link-button" type="button" onClick={() => {
+                                                setGithubFormOpen(false);
+                                                setGithubTokenInput("");
+                                                setGithubRepositoryInput(githubStatus.connection?.repositoryFullName ?? "");
+                                            }} disabled={githubBusy}>取消</button>}
+                                        </div>
+                                    </form> : <>
+                                        <div className="github-status-line"><span className="github-connected-dot"/>已连接备份仓库
+                                            <span className="github-repository-name">{githubStatus.connection.repositoryFullName}</span>
                                         </div>
                                         <div className="github-management-row">
-                                            <button className="github-link-button" onClick={() => void refreshGithubRepositories(true)} disabled={githubBusy}>
-                                                {githubBusy ? "读取中…" : githubStatus.connection.repositoryId ? "更换仓库" : "选择仓库"}
-                                            </button>
-                                            <button className="github-link-button" onClick={() => void connectGithub()} disabled={githubBusy}>更换 GitHub 账号</button>
+                                            <button className="github-link-button" onClick={() => {
+                                                setGithubRepositoryInput(githubStatus.connection?.repositoryFullName ?? "");
+                                                setGithubFormOpen(true);
+                                            }} disabled={githubBusy}>更换 PAT / 仓库</button>
                                             <button className="github-link-button muted" onClick={() => void disconnectGithub()} disabled={githubBusy}>断开</button>
                                         </div>
-                                        {githubPickerOpen && <div className="github-repository-picker">
-                                            {githubRepositories.length ? <select aria-label="GitHub 备份仓库" value={githubStatus.connection.repositoryId ?? ""}
-                                                                                onChange={(event) => void chooseGithubRepository(event.target.value)} disabled={githubBusy}>
-                                                <option value="" disabled>选择一个已授权的仓库</option>
-                                                {githubRepositories.map((repository) => <option key={repository.id} value={repository.id}>
-                                                    {repository.fullName}{repository.private ? " · 私有" : " · 公开"}
-                                                </option>)}
-                                            </select> : <span>{githubBusy ? "正在加载仓库…" : "没有可用仓库；请检查 GitHub App 的仓库访问权限。"}</span>}
-                                        </div>}
                                     </>}
                         </div>
                         <div className="cloud-buttons">
@@ -769,7 +737,7 @@ export default function App() {
                                     disabled={syncing}>{syncing ? <LoaderCircle className="spin" size={14}/> :
                                 <RefreshCw size={14}/>}{syncing ? "同步中" : "立即同步"}</button>
                             <button className="backup-github-button" onClick={() => void backupToGithub()}
-                                    disabled={backingUp || !githubStatus?.connection?.repositoryId || githubStatusLoading}>{backingUp ? <LoaderCircle className="spin" size={13}/> :
+                                    disabled={backingUp || !githubStatus?.connection?.repositoryFullName || githubStatusLoading}>{backingUp ? <LoaderCircle className="spin" size={13}/> :
                                 <ArrowDownToLine size={13}/>}{backingUp ? "备份中" : "GitHub 备份"}</button>
                             <button className="sign-out-button"
                                     onClick={() => void import("./infrastructure/supabase").then(({signOutCloud}) => signOutCloud()).catch((error: unknown) => setNotice(error instanceof Error ? error.message : "无法退出登录"))}>
@@ -796,7 +764,7 @@ export default function App() {
                         <div className="outbox-count"><span>待同步操作</span><strong>{snapshot.outbox.length}</strong>
                         </div>
                     </>}
-                    <div className="settings-footnote">GitHub 安装令牌只在服务端使用。断开连接不会卸载 GitHub App；如需撤销仓库权限，请在 GitHub 设置中卸载该 App。笔记跨设备同步仍由 Supabase 完成。
+                    <div className="settings-footnote">PAT 会在服务端加密保存；断开连接不会撤销 GitHub token，如需撤销请在 GitHub token 设置中删除。笔记跨设备同步仍由 Supabase 完成。
                     </div>
                 </div>
                 <div className="dialog-footer"><span>revnote · Web 版</span><span>版本 0.1.0</span></div>

@@ -1,12 +1,10 @@
+import { GithubApiError } from "../_shared/github.ts";
+
 export interface GithubAccountConnection {
-  installationId: string;
-  installationAccountLogin: string;
-  repositoryId: string | null;
-  repositoryFullName: string | null;
+  repositoryFullName: string;
 }
 
 export interface GithubRepository {
-  id: number | string;
   full_name: string;
   private: boolean;
   default_branch: string | null;
@@ -14,29 +12,23 @@ export interface GithubRepository {
 
 export interface GithubAccountActionInput {
   action?: string;
-  repositoryId?: unknown;
-}
-
-export interface GithubAccountClientConnection {
-  installationAccountLogin: string;
-  repositoryId: string | null;
-  repositoryFullName: string | null;
+  token?: unknown;
+  repositoryFullName?: unknown;
 }
 
 export interface GithubAccountDependencies {
-  isGithubAppConfigured(): boolean;
-  getGithubAppSlug(): string;
-  createOpaqueState(): string;
-  hashState(state: string): Promise<string>;
+  isTokenEncryptionConfigured(): boolean;
   now(): Date;
-  deleteExpiredInstallStates(expiresBefore: string): Promise<void>;
-  insertInstallState(stateHash: string, userId: string, expiresAt: string): Promise<void>;
   getConnection(userId: string): Promise<GithubAccountConnection | null>;
-  createInstallationToken(installationId: string): Promise<string>;
-  listInstallationRepositories(token: string): Promise<GithubRepository[]>;
-  updateSelectedRepository(userId: string, repositoryId: string, repositoryFullName: string, updatedAt: string): Promise<void>;
+  getGithubRepository(token: string, repositoryFullName: string): Promise<GithubRepository>;
+  encryptToken(token: string, userId: string, repositoryFullName: string): Promise<string>;
+  saveConnection(userId: string, encryptedToken: string, repositoryFullName: string, updatedAt: string): Promise<void>;
   deleteConnection(userId: string): Promise<void>;
   deleteBackupState(userId: string): Promise<void>;
+}
+
+export interface GithubAccountClientConnection {
+  repositoryFullName: string;
 }
 
 export class GithubAccountError extends Error {
@@ -45,77 +37,16 @@ export class GithubAccountError extends Error {
   }
 }
 
-const installStateLifetimeMs = 10 * 60 * 1000;
-
 export async function handleGithubAccountAction(
   userId: string,
   input: GithubAccountActionInput,
   dependencies: GithubAccountDependencies,
 ) {
   if (input.action === "status") {
-    const connection = await dependencies.getConnection(userId);
     return {
-      configured: dependencies.isGithubAppConfigured(),
-      connection: toClientConnection(connection),
+      configured: dependencies.isTokenEncryptionConfigured(),
+      connection: toClientConnection(await dependencies.getConnection(userId)),
     };
-  }
-
-  if (!dependencies.isGithubAppConfigured()) {
-    throw new GithubAccountError("GitHub App 尚未完成服务端配置", 503);
-  }
-
-  if (input.action === "start") {
-    const state = dependencies.createOpaqueState();
-    const now = dependencies.now();
-    await dependencies.deleteExpiredInstallStates(now.toISOString());
-    await dependencies.insertInstallState(
-      await dependencies.hashState(state),
-      userId,
-      new Date(now.getTime() + installStateLifetimeMs).toISOString(),
-    );
-
-    const installUrl = new URL(`https://github.com/apps/${encodeURIComponent(dependencies.getGithubAppSlug())}/installations/new`);
-    installUrl.searchParams.set("state", state);
-    return { installUrl: installUrl.toString() };
-  }
-
-  const connection = await dependencies.getConnection(userId);
-  if (!connection) throw new GithubAccountError("请先连接 GitHub App", 409);
-
-  if (input.action === "repositories") {
-    const token = await dependencies.createInstallationToken(connection.installationId);
-    const repositories = await dependencies.listInstallationRepositories(token);
-    return {
-      repositories: repositories
-        .filter((repository) => repository.full_name.split("/")[0]?.toLowerCase() === connection.installationAccountLogin.toLowerCase())
-        .map(toClientRepository),
-      selectedRepositoryId: connection.repositoryId,
-    };
-  }
-
-  if (input.action === "select-repository") {
-    const repositoryId = typeof input.repositoryId === "string" ? input.repositoryId : "";
-    if (!/^\d+$/.test(repositoryId)) throw new GithubAccountError("请选择一个有效仓库");
-
-    const token = await dependencies.createInstallationToken(connection.installationId);
-    const repositories = await dependencies.listInstallationRepositories(token);
-    const repository = repositories.find((item) => String(item.id) === repositoryId);
-    if (!repository) {
-      throw new GithubAccountError("该仓库不在 GitHub App 的授权范围内，请重新加载列表", 403);
-    }
-
-    const repositoryOwner = repository.full_name.split("/")[0];
-    if (repositoryOwner?.toLowerCase() !== connection.installationAccountLogin.toLowerCase()) {
-      throw new GithubAccountError("请选择安装 GitHub App 的个人账号所拥有的仓库", 403);
-    }
-
-    await dependencies.updateSelectedRepository(
-      userId,
-      repositoryId,
-      repository.full_name,
-      dependencies.now().toISOString(),
-    );
-    return { connection: toClientConnection(await dependencies.getConnection(userId)) };
   }
 
   if (input.action === "disconnect") {
@@ -124,23 +55,56 @@ export async function handleGithubAccountAction(
     return { ok: true };
   }
 
-  throw new GithubAccountError("Unsupported action");
+  if (input.action !== "connect") throw new GithubAccountError("Unsupported action");
+  if (!dependencies.isTokenEncryptionConfigured()) {
+    throw new GithubAccountError("服务端尚未配置 GITHUB_TOKEN_ENCRYPTION_KEY", 503);
+  }
+
+  const token = typeof input.token === "string" ? input.token.trim() : "";
+  if (!token.startsWith("github_pat_") || token.length < 20 || token.length > 512) {
+    throw new GithubAccountError("请输入 fine-grained personal access token（前缀应为 github_pat_）");
+  }
+
+  const repositoryFullName = normalizeRepositoryName(input.repositoryFullName);
+  let repository: GithubRepository;
+  try {
+    repository = await dependencies.getGithubRepository(token, repositoryFullName);
+  } catch (error) {
+    if (error instanceof GithubApiError && error.status === 401) {
+      throw new GithubAccountError("PAT 无效或已过期，请检查后重试", 401);
+    }
+    if (error instanceof GithubApiError && (error.status === 403 || error.status === 404)) {
+      throw new GithubAccountError("PAT 无法访问该仓库；请确认 token 只授权了此仓库，并具有 Contents: Read and write 权限", 403);
+    }
+    throw error;
+  }
+
+  const canonicalRepositoryName = normalizeRepositoryName(repository.full_name);
+  const encryptedToken = await dependencies.encryptToken(token, userId, canonicalRepositoryName);
+  const currentConnection = await dependencies.getConnection(userId);
+  if (currentConnection && currentConnection.repositoryFullName.toLowerCase() !== canonicalRepositoryName.toLowerCase()) {
+    await dependencies.deleteBackupState(userId);
+  }
+
+  await dependencies.saveConnection(
+    userId,
+    encryptedToken,
+    canonicalRepositoryName,
+    dependencies.now().toISOString(),
+  );
+  return { connection: { repositoryFullName: canonicalRepositoryName } };
+}
+
+function normalizeRepositoryName(value: unknown) {
+  const fullName = typeof value === "string" ? value.trim() : "";
+  const parts = fullName.split("/");
+  if (parts.length !== 2 || parts.some((part) => !/^[A-Za-z0-9_.-]+$/.test(part) || part === "." || part === "..")) {
+    throw new GithubAccountError("仓库名称请使用 owner/repository 格式");
+  }
+  return `${parts[0]}/${parts[1]}`;
 }
 
 function toClientConnection(connection: GithubAccountConnection | null): GithubAccountClientConnection | null {
   if (!connection) return null;
-  return {
-    installationAccountLogin: connection.installationAccountLogin,
-    repositoryId: connection.repositoryId,
-    repositoryFullName: connection.repositoryFullName,
-  };
-}
-
-function toClientRepository(repository: GithubRepository) {
-  return {
-    id: String(repository.id),
-    fullName: repository.full_name,
-    private: repository.private,
-    defaultBranch: repository.default_branch,
-  };
+  return { repositoryFullName: connection.repositoryFullName };
 }
