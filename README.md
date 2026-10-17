@@ -11,6 +11,8 @@ npm run dev
 
 生产构建：`npm run build`。
 
+Edge Functions 使用 Deno 2 和 Effect 4（依赖分别由各函数目录的 `deno.json` 固定；共享测试使用 `supabase/functions/deno.json`）；前端继续使用根目录的 Effect 3。可运行 `npm test` 测试共享模块，`npm run check:edge` 检查两个函数入口。
+
 ## 已实现
 
 - React、TypeScript、Tailwind CSS 与 Radix UI primitives；领域数据以 Effect Schema 定义。
@@ -20,7 +22,7 @@ npm run dev
 - 版本历史、分支提示、固定、语义颜色、回收站、当前版本全文/元数据搜索。
 - JSON 导出与恢复；恢复前会提示替换当前浏览器的数据。
 - 可选 Supabase Auth 邮箱链接、幂等 push、按 `server_seq` pull、Realtime 唤醒和 RLS 数据库迁移。
-- 每位用户可连接一个仅授权单仓库的 fine-grained personal access token；Supabase Edge Function 在服务端解密并将当前版本备份为 Markdown 和 JSON 元数据，客户端不会再次读取已保存的 token。
+- 每位用户可连接一个仅授权单仓库的 fine-grained personal access token；Effect 4 编写的 Supabase Edge Functions 在服务端解密并将当前版本备份为 Markdown 和 JSON 元数据，客户端不会再次读取已保存的 token。
 
 ## Supabase 同步配置
 
@@ -54,10 +56,15 @@ src/domain/             Effect Schema 与业务命令
 src/infrastructure/     IndexedDB、Supabase 同步适配器
 src/App.tsx             Web UI
 supabase/migrations/    Postgres 表、RLS、push/pull/search RPC
-supabase/functions/     用户级 GitHub PAT 加密连接与备份
+supabase/functions/_shared/shared-schema.ts         跨模块共享的备份契约
+supabase/functions/_shared/github/                 GitHub Schema、Service、Layer 与测试
+supabase/functions/_shared/supabase/               Supabase Schema、Service、Layer 与测试
+supabase/functions/_shared/backup-coordinator/      用例、Layer 组合与测试
+supabase/functions/github-account/index.ts          HTTP/Deno 入口
+supabase/functions/github-backup/index.ts           HTTP/Deno 入口
 ```
 
-Supabase 迁移预留了 `pgvector` embedding 字段和当前版本全文检索 RPC；本版尚未配置 embedding 生成任务或语义检索界面。GitHub 备份只写当前版本；每位用户的文件保存在所选仓库的 `users/<supabase-user-id>/` 目录中，JSON 导出可作为手动本地备份。GitHub 是单向备份目的地，多设备同步仍由 Supabase 完成。Android、自动合并、多人实时协作均不在本版实现范围内。
+Supabase 迁移预留了 `pgvector` embedding 字段和当前版本全文检索 RPC；本版尚未配置 embedding 生成任务或语义检索界面。GitHub 备份只写当前版本；每位用户备份到自己选择的仓库根目录，Markdown 和元数据分别保存在 `notes/` 与 `metadata/` 中，JSON 导出可作为手动本地备份。GitHub 是单向备份目的地，多设备同步仍由 Supabase 完成。Android、自动合并、多人实时协作均不在本版实现范围内。
 
 ## Cloudflare Workers 部署
 

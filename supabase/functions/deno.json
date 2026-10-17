@@ -1,0 +1,6 @@
+{
+  "nodeModulesDir": "none",
+  "imports": {
+    "effect": "npm:effect@4.0.5"
+  }
+}

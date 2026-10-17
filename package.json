@@ -9,7 +9,10 @@
     "deploy": "wrangler deploy",
     "preview": "vite preview --host 0.0.0.0",
     "typecheck": "tsc -b",
-    "test": "deno test supabase/functions/_shared/github-token_test.ts supabase/functions/_shared/github_test.ts supabase/functions/github-account/logic_test.ts supabase/functions/github-backup/branch_test.ts"
+    "test": "deno test --frozen-lockfile --config supabase/functions/deno.json supabase/functions/_shared",
+    "fmt:edge": "deno fmt --check supabase/functions",
+    "lint:edge": "deno lint supabase/functions",
+    "check:edge": "deno check --frozen-lockfile --config supabase/functions/github-account/deno.json supabase/functions/github-account/index.ts && deno check --frozen-lockfile --config supabase/functions/github-backup/deno.json supabase/functions/github-backup/index.ts"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.1.15",
